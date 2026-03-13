@@ -2,6 +2,8 @@ name: Auto Create and Sync Multiple Projects
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '*/10 * * * *'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -10,39 +12,70 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         repo: 
           - dailinhao/dailinhao-project
-          - dailinhao/dailinhao1.project
-          - dailinhao/dailinhao2.project
+          - dailinhao/dailinhao1-project    # 注意：不能用点，改成横线
+          - dailinhao/dailinhao2-project    # 注意：不能用点，改成横线
     
     steps:
       - name: Checkout ${{ matrix.repo }}
         uses: actions/checkout@v4
         with:
           repository: ${{ matrix.repo }}
-          token: ${{ secrets.GH_SYNC_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}   # 改成这个
           fetch-depth: 0
       
-      - name: Create and Sync to GitLab
+      - name: Get Repo Name
+        id: info
+        run: |
+          REPO_NAME=$(echo "${{ matrix.repo }}" | cut -d'/' -f2)
+          echo "name=$REPO_NAME" >> $GITHUB_OUTPUT
+      
+      - name: Create GitLab Project if not exists
         env:
           GL_TOKEN: ${{ secrets.GITLAB_TOKEN }}
           GL_URL: ${{ secrets.GITLAB_URL }}
           GL_USER: ${{ secrets.GITLAB_USERNAME }}
+          REPO_NAME: ${{ steps.info.outputs.name }}
         run: |
-          REPO_NAME=$(echo "${{ matrix.repo }}" | cut -d'/' -f2)
+          echo "检查 GitLab 项目: $REPO_NAME"
           
-          # 检查并创建项目
-          curl -s -X POST \
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "PRIVATE-TOKEN: ${GL_TOKEN}" \
-            -H "Content-Type: application/json" \
-            "https://${GL_URL}/api/v4/projects" \
-            -d "{\"name\":\"${REPO_NAME}\",\"visibility\":\"private\"}" || true
+            "https://${GL_URL}/api/v4/projects/${GL_USER}%2F${REPO_NAME}")
           
-          sleep 3
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "✅ 项目已存在"
+          else
+            echo "🆕 创建项目: $REPO_NAME"
+            curl -s -X POST \
+              -H "PRIVATE-TOKEN: ${GL_TOKEN}" \
+              -H "Content-Type: application/json" \
+              "https://${GL_URL}/api/v4/projects" \
+              -d "{\"name\":\"${REPO_NAME}\",\"visibility\":\"private\",\"initialize_with_readme\":false}"
+            sleep 5
+          fi
+      
+      - name: Push to GitLab
+        env:
+          GL_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GL_URL: ${{ secrets.GITLAB_URL }}
+          GL_USER: ${{ secrets.GITLAB_USERNAME }}
+          REPO_NAME: ${{ steps.info.outputs.name }}
+        run: |
+          echo "🚀 推送到 GitLab: $REPO_NAME"
           
-          # 推送
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
           rm -rf .github
-          git commit -m "sync" || true
+          git add -A
+          git commit -m "Sync from GitHub" || true
+          
           git remote add gitlab "https://oauth2:${GL_TOKEN}@${GL_URL}/${GL_USER}/${REPO_NAME}.git"
           git push gitlab --all --force
+          git push gitlab --tags --force || true
+          
+          echo "✅ 完成: $REPO_NAME"
