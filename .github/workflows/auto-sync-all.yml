@@ -1,0 +1,48 @@
+name: Auto Create and Sync Multiple Projects
+
+on:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        repo: 
+          - dailinhao/dailinhao-project
+          - dailinhao/dailinhao1.project
+          - dailinhao/dailinhao2.project
+    
+    steps:
+      - name: Checkout ${{ matrix.repo }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          token: ${{ secrets.GH_SYNC_TOKEN }}
+          fetch-depth: 0
+      
+      - name: Create and Sync to GitLab
+        env:
+          GL_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GL_URL: ${{ secrets.GITLAB_URL }}
+          GL_USER: ${{ secrets.GITLAB_USERNAME }}
+        run: |
+          REPO_NAME=$(echo "${{ matrix.repo }}" | cut -d'/' -f2)
+          
+          # 检查并创建项目
+          curl -s -X POST \
+            -H "PRIVATE-TOKEN: ${GL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "https://${GL_URL}/api/v4/projects" \
+            -d "{\"name\":\"${REPO_NAME}\",\"visibility\":\"private\"}" || true
+          
+          sleep 3
+          
+          # 推送
+          rm -rf .github
+          git commit -m "sync" || true
+          git remote add gitlab "https://oauth2:${GL_TOKEN}@${GL_URL}/${GL_USER}/${REPO_NAME}.git"
+          git push gitlab --all --force
